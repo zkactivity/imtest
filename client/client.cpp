@@ -101,9 +101,9 @@ int main(int argc, char * argv[]) {
 
 	cout << "url: " << url << endl <<
 			"host: " << host << endl <<
-			"port: " << host << endl <<
-			"path: " << host << endl <<
-			"request_url: " << host << endl;
+			"port: " << port << endl <<
+			"path: " << path << endl <<
+			"request_url: " << request_url << endl;
 
 	evhttp_connection * conn = evhttp_connection_base_new(base, dnsbase, host, port);
 	if(!conn) {
