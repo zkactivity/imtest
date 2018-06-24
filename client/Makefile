@@ -1,5 +1,5 @@
 client:client.cpp
-	g++ $^ -o $@ -levent
+	g++ $^ -o $@ -lcurl
 
 clean:
 	rm -f client
