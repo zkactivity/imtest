@@ -186,35 +186,15 @@ send_document_cb(struct evhttp_request *req, void *arg)
 	if (S_ISDIR(st.st_mode)) {
 		/* If it's a directory, read the comments and make a little
 		 * index page */
-#ifdef _WIN32
-		HANDLE d;
-		WIN32_FIND_DATAA ent;
-		char *pattern;
-		size_t dirlen;
-#else
 		DIR *d;
 		struct dirent *ent;
-#endif
 		const char *trailing_slash = "";
 
 		if (!strlen(path) || path[strlen(path)-1] != '/')
 			trailing_slash = "/";
 
-#ifdef _WIN32
-		dirlen = strlen(whole_path);
-		pattern = malloc(dirlen+3);
-		memcpy(pattern, whole_path, dirlen);
-		pattern[dirlen] = '\\';
-		pattern[dirlen+1] = '*';
-		pattern[dirlen+2] = '\0';
-		d = FindFirstFileA(pattern, &ent);
-		free(pattern);
-		if (d == INVALID_HANDLE_VALUE)
-			goto err;
-#else
 		if (!(d = opendir(whole_path)))
 			goto err;
-#endif
 
 		evbuffer_add_printf(evb,
                     "<!DOCTYPE html>\n"
@@ -230,27 +210,14 @@ send_document_cb(struct evhttp_request *req, void *arg)
 		    path, /* XXX html-escape this? */
 		    trailing_slash,
 		    decoded_path /* XXX html-escape this */);
-#ifdef _WIN32
-		do {
-			const char *name = ent.cFileName;
-#else
 		while ((ent = readdir(d))) {
 			const char *name = ent->d_name;
-#endif
 			evbuffer_add_printf(evb,
 			    "    <li><a href=\"%s\">%s</a>\n",
 			    name, name);/* XXX escape this */
-#ifdef _WIN32
-		} while (FindNextFileA(d, &ent));
-#else
 		}
-#endif
 		evbuffer_add_printf(evb, "</ul></body></html>\n");
-#ifdef _WIN32
-		FindClose(d);
-#else
 		closedir(d);
-#endif
 		evhttp_add_header(evhttp_request_get_output_headers(req),
 		    "Content-Type", "text/html");
 	} else {
@@ -304,13 +271,8 @@ main(int argc, char **argv)
 	struct evhttp_bound_socket *handle;
 
 	ev_uint16_t port = 0;
-#ifdef _WIN32
-	WSADATA WSAData;
-	WSAStartup(0x101, &WSAData);
-#else
 	if (signal(SIGPIPE, SIG_IGN) == SIG_ERR)
 		return (1);
-#endif
 	if (argc < 2) {
 		syntax();
 		return 1;
