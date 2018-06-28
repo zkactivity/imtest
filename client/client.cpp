@@ -40,10 +40,16 @@ int main(void)
     /* First set the URL that is about to receive our POST. This URL can
        just as well be a https:// URL if that is what should receive the
        data. */ 
-    curl_easy_setopt(curl, CURLOPT_URL, "http://127.0.0.1:5000");
-    /* Now specify the POST data */ 
-    curl_easy_setopt(curl, CURLOPT_POSTFIELDS, "username=testun&password=testpd");
- 
+    curl_easy_setopt(curl, CURLOPT_URL, "http://192.168.199.216:9877");
+	curl_easy_setopt(curl, CURLOPT_HTTP_VERSION, CURL_HTTP_VERSION_1_1);
+    struct curl_slist *chunk = NULL;
+    chunk = curl_slist_append(chunk, "Upgrade: websocket");
+    chunk = curl_slist_append(chunk, "Connection: Upgrade");
+    chunk = curl_slist_append(chunk, "Sec-WebSocket-Accept: fFBooB7FAkLlXgRSz0BT3v4hq5s=");
+    chunk = curl_slist_append(chunk, "Sec-WebSocket-Location: ws://localhost/");
+	
+    curl_easy_setopt(curl, CURLOPT_HTTPHEADER, chunk);
+ 	
     curl_easy_setopt(curl, CURLOPT_WRITEDATA, stdout); //将返回的http头输出到fp指向的文件
     curl_easy_setopt(curl, CURLOPT_HEADERDATA, stdout); //将返回的html主体数据输出到fp指向的文件
 

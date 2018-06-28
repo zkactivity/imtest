@@ -129,138 +129,25 @@ static void
 send_document_cb(struct evhttp_request *req, void *arg)
 {
 	struct evbuffer *evb = NULL;
-	const char *docroot = (const char *)arg;
-	const char *uri = evhttp_request_get_uri(req);
-	struct evhttp_uri *decoded = NULL;
-	const char *path;
-	char *decoded_path;
-	char *whole_path = NULL;
-	size_t len;
-	int fd = -1;
-	struct stat st;
-
-	if (evhttp_request_get_command(req) != EVHTTP_REQ_GET) {
-		dump_request_cb(req, arg);
-		return;
-	}
-
-	printf("Got a GET request for <%s>\n",  uri);
-
-	/* Decode the URI */
-	decoded = evhttp_uri_parse(uri);
-	if (!decoded) {
-		printf("It's not a good URI. Sending BADREQUEST\n");
-		evhttp_send_error(req, HTTP_BADREQUEST, 0);
-		return;
-	}
-
-	/* Let's see what path the user asked for. */
-	path = evhttp_uri_get_path(decoded);
-	if (!path) path = "/";
-
-	/* We need to decode it, to see what path the user really wanted. */
-	decoded_path = evhttp_uridecode(path, 0, NULL);
-	if (decoded_path == NULL)
-		goto err;
-	/* Don't allow any ".."s in the path, to avoid exposing stuff outside
-	 * of the docroot.  This test is both overzealous and underzealous:
-	 * it forbids aceptable paths like "/this/one..here", but it doesn't
-	 * do anything to prevent symlink following." */
-	if (strstr(decoded_path, ".."))
-		goto err;
-
-	len = strlen(decoded_path)+strlen(docroot)+2;
-	if (!(whole_path = (char *)malloc(len))) {
-		perror("malloc");
-		goto err;
-	}
-	evutil_snprintf(whole_path, len, "%s/%s", docroot, decoded_path);
-
-	if (stat(whole_path, &st)<0) {
-		goto err;
-	}
+	
+	dump_request_cb(req, arg);
 
 	/* This holds the content we're sending. */
 	evb = evbuffer_new();
-
-	if (S_ISDIR(st.st_mode)) {
-		/* If it's a directory, read the comments and make a little
-		 * index page */
-		DIR *d;
-		struct dirent *ent;
-		const char *trailing_slash = "";
-
-		if (!strlen(path) || path[strlen(path)-1] != '/')
-			trailing_slash = "/";
-
-		if (!(d = opendir(whole_path)))
-			goto err;
-
-		evbuffer_add_printf(evb,
-                    "<!DOCTYPE html>\n"
-                    "<html>\n <head>\n"
-                    "  <meta charset='utf-8'>\n"
-		    "  <title>%s</title>\n"
-		    "  <base href='%s%s'>\n"
-		    " </head>\n"
-		    " <body>\n"
-		    "  <h1>%s</h1>\n"
-		    "  <ul>\n",
-		    decoded_path, /* XXX html-escape this. */
-		    path, /* XXX html-escape this? */
-		    trailing_slash,
-		    decoded_path /* XXX html-escape this */);
-		while ((ent = readdir(d))) {
-			const char *name = ent->d_name;
-			evbuffer_add_printf(evb,
-			    "    <li><a href=\"%s\">%s</a>\n",
-			    name, name);/* XXX escape this */
-		}
-		evbuffer_add_printf(evb, "</ul></body></html>\n");
-		closedir(d);
-		evhttp_add_header(evhttp_request_get_output_headers(req),
-		    "Content-Type", "text/html");
-	} else {
-		/* Otherwise it's a file; add it to the buffer to get
-		 * sent via sendfile */
-		const char *type = guess_content_type(decoded_path);
-		if ((fd = open(whole_path, O_RDONLY)) < 0) {
-			perror("open");
-			goto err;
-		}
-
-		if (fstat(fd, &st)<0) {
-			/* Make sure the length still matches, now that we
-			 * opened the file :/ */
-			perror("fstat");
-			goto err;
-		}
-		evhttp_add_header(evhttp_request_get_output_headers(req),
-		    "Content-Type", type);
-		evbuffer_add_file(evb, fd, 0, st.st_size);
-	}
+	
+	evbuffer_add_printf(evb,
+                "Server reply!");
+	evhttp_add_header(evhttp_request_get_output_headers(req),
+	    "Content-Type", "text/html");
+	
 
 	evhttp_send_reply(req, 200, "OK", evb);
 	goto done;
 err:
 	evhttp_send_error(req, 404, "Document was not found");
-	if (fd>=0)
-		close(fd);
 done:
-	if (decoded)
-		evhttp_uri_free(decoded);
-	if (decoded_path)
-		free(decoded_path);
-	if (whole_path)
-		free(whole_path);
 	if (evb)
 		evbuffer_free(evb);
-}
-
-static void
-syntax(void)
-{
-	fprintf(stdout, "Syntax: http-server <docroot>\n");
 }
 
 int
@@ -270,15 +157,10 @@ main(int argc, char **argv)
 	struct evhttp *http;
 	struct evhttp_bound_socket *handle;
 
-	ev_uint16_t port = 0;
+	ev_uint16_t port = 9877;
 	if (signal(SIGPIPE, SIG_IGN) == SIG_ERR)
 		return (1);
-/*
-	if (argc < 2) {
-		syntax();
-		return 1;
-	}
-*/
+	
 	base = event_base_new();
 	if (!base) {
 		fprintf(stderr, "Couldn't create an event_base: exiting\n");
@@ -293,11 +175,11 @@ main(int argc, char **argv)
 	}
 
 	/* The /dump URI will dump all requests to stdout and say 200 ok. */
-	evhttp_set_cb(http, "/dump", dump_request_cb, NULL);
+	evhttp_set_cb(http, "/dump", dump_request_cb, NULL);  //route
 
 	/* We want to accept arbitrary requests, so we need to set a "generic"
 	 * cb.  We can also add callbacks for specific paths. */
-	evhttp_set_gencb(http, send_document_cb, argv[1]);
+	evhttp_set_gencb(http, send_document_cb, NULL);
 
 	/* Now we tell the evhttp what port to listen on */
 	handle = evhttp_bind_socket_with_handle(http, "0.0.0.0", port);
