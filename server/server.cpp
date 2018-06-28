@@ -7,7 +7,6 @@
  */
 
 /* Compatibility for possible missing IPv6 declarations */
-#include "../util-internal.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -16,23 +15,12 @@
 #include <sys/types.h>
 #include <sys/stat.h>
 
-#ifdef _WIN32
-#include <winsock2.h>
-#include <ws2tcpip.h>
-#include <windows.h>
-#include <io.h>
-#include <fcntl.h>
-#ifndef S_ISDIR
-#define S_ISDIR(x) (((x) & S_IFMT) == S_IFDIR)
-#endif
-#else
 #include <sys/stat.h>
 #include <sys/socket.h>
 #include <signal.h>
 #include <fcntl.h>
 #include <unistd.h>
 #include <dirent.h>
-#endif
 
 #include <event2/event.h>
 #include <event2/http.h>
@@ -45,24 +33,6 @@
 # ifdef _XOPEN_SOURCE_EXTENDED
 #  include <arpa/inet.h>
 # endif
-#endif
-
-#ifdef _WIN32
-#ifndef stat
-#define stat _stat
-#endif
-#ifndef fstat
-#define fstat _fstat
-#endif
-#ifndef open
-#define open _open
-#endif
-#ifndef close
-#define close _close
-#endif
-#ifndef O_RDONLY
-#define O_RDONLY _O_RDONLY
-#endif
 #endif
 
 char uri_root[512];
@@ -159,7 +129,7 @@ static void
 send_document_cb(struct evhttp_request *req, void *arg)
 {
 	struct evbuffer *evb = NULL;
-	const char *docroot = arg;
+	const char *docroot = (const char *)arg;
 	const char *uri = evhttp_request_get_uri(req);
 	struct evhttp_uri *decoded = NULL;
 	const char *path;
@@ -200,7 +170,7 @@ send_document_cb(struct evhttp_request *req, void *arg)
 		goto err;
 
 	len = strlen(decoded_path)+strlen(docroot)+2;
-	if (!(whole_path = malloc(len))) {
+	if (!(whole_path = (char *)malloc(len))) {
 		perror("malloc");
 		goto err;
 	}
