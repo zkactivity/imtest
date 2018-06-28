@@ -273,11 +273,12 @@ main(int argc, char **argv)
 	ev_uint16_t port = 0;
 	if (signal(SIGPIPE, SIG_IGN) == SIG_ERR)
 		return (1);
+/*
 	if (argc < 2) {
 		syntax();
 		return 1;
 	}
-
+*/
 	base = event_base_new();
 	if (!base) {
 		fprintf(stderr, "Couldn't create an event_base: exiting\n");
