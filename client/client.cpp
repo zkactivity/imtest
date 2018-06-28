@@ -42,8 +42,11 @@ int main(void)
        data. */ 
     curl_easy_setopt(curl, CURLOPT_URL, "http://127.0.0.1:5000");
     /* Now specify the POST data */ 
-    curl_easy_setopt(curl, CURLOPT_POSTFIELDS, "username=testum&password=testpd");
+    curl_easy_setopt(curl, CURLOPT_POSTFIELDS, "username=testun&password=testpd");
  
+        curl_easy_setopt(curl, CURLOPT_WRITEDATA, stdout); //将返回的http头输出到fp指向的文件
+        curl_easy_setopt(curl, CURLOPT_HEADERDATA, stdout); //将返回的html主体数据输出到fp指向的文件
+
     /* Perform the request, res will get the return code */ 
     res = curl_easy_perform(curl);
     /* Check for errors */ 
