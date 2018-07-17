@@ -1,6 +1,4 @@
-LIBS=/usr/local/lib/libevent.a
-
-server:server.cpp $(LIBS)
-	g++ $^ -o $@ -levent
+server:tls_server.cpp
+	g++ $^ -o $@ -lssl -lcrypto
 clean:
 	rm -f server
