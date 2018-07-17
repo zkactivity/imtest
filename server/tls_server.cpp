@@ -63,17 +63,19 @@ SSL_CTX *create_context()
     return ctx;
 }
 
+#define CERTFILE_PATH "/opt/ca/certs/stf.cert.pem"
+#define KEY_PATH "/opt/ca/private/stf.key.pem"
 void configure_context(SSL_CTX *ctx)
 {
     SSL_CTX_set_ecdh_auto(ctx, 1);
 
     /* Set the key and cert */
-    if (SSL_CTX_use_certificate_file(ctx, "cert.pem", SSL_FILETYPE_PEM) <= 0) {
+    if (SSL_CTX_use_certificate_file(ctx, CERTFILE_PATH, SSL_FILETYPE_PEM) <= 0) {
         ERR_print_errors_fp(stderr);
 	exit(EXIT_FAILURE);
     }
 
-    if (SSL_CTX_use_PrivateKey_file(ctx, "key.pem", SSL_FILETYPE_PEM) <= 0 ) {
+    if (SSL_CTX_use_PrivateKey_file(ctx, KEY_PATH, SSL_FILETYPE_PEM) <= 0 ) {
         ERR_print_errors_fp(stderr);
 	exit(EXIT_FAILURE);
     }
@@ -89,7 +91,7 @@ int main(int argc, char **argv)
 
     configure_context(ctx);
 
-    sock = create_socket(4433);
+    sock = create_socket(9877);
 
     /* Handle connections */
     while(1) {
