@@ -64,7 +64,7 @@ int hostname_to_ip (const std::string& hostname, std::string& ip) {
 	hostent * hname_info = gethostbyname(hostname.c_str());
 	int i = 0;
     if(hname_info != NULL) {
-		ip = h_addr_list[0];
+		ip = hname_info->h_addr_list[0];
         for(; hname_info->h_addr_list[i] != NULL; i++) { }
     }
 	return i;

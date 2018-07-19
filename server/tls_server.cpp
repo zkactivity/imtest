@@ -94,7 +94,7 @@ int main(int argc, char **argv)
     sock = create_socket(9877);
 
     /* Handle connections */
-    while(1) {
+    while(true) {
         struct sockaddr_in addr;
         uint len = sizeof(addr);
         SSL *ssl;
