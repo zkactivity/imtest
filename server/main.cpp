@@ -1,83 +1,194 @@
-/*
-è¿™æ˜¯ä¸€ä¸ªæµ‹è¯•ç”¨çš„æœåŠ¡å™¨ï¼Œåªæœ‰ä¸¤ä¸ªåŠŸèƒ½ï¼š
-1ï¼šå¯¹äºæ¯ä¸ªå·²è¿æ¥å®¢æˆ·ç«¯ï¼Œæ¯10ç§’å‘å…¶å‘é€ä¸€å¥hello, world
-2ï¼šè‹¥å®¢æˆ·ç«¯å‘æœåŠ¡å™¨å‘é€æ•°æ®ï¼ŒæœåŠ¡å™¨æ”¶åˆ°åï¼Œå†å°†æ•°æ®å›å‘ç»™å®¢æˆ·ç«¯
-*/
-//test.cpp
-#include "TcpEventServer.h"
-#include <set>
-#include <vector>
+
+extern "C" {
+#include <sys/socket.h>
+#include <sys/epoll.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
+#include <fcntl.h>
+#include <unistd.h>
+#include <stdio.h>
+#include <errno.h>
+#include <string.h>
+}
+
+#include <iostream>
 using namespace std;
 
-//æµ‹è¯•ç¤ºä¾‹
-class TestServer : public TcpEventServer
-{
-private:
-  vector<Conn*> vec;
-protected:
-  //é‡è½½å„ä¸ªå¤„ç†ä¸šåŠ¡çš„è™šå‡½æ•°
-  void ReadEvent(Conn *conn);
-  void WriteEvent(Conn *conn);
-  void ConnectionEvent(Conn *conn);
-  void CloseEvent(Conn *conn, short events);
-public:
-  TestServer(int count) : TcpEventServer(count) { }
-  ~TestServer() { } 
-  
-  //é€€å‡ºäº‹ä»¶ï¼Œå“åº”Ctrl+C
-  static void QuitCb(int sig, short events, void *data);
-  //å®šæ—¶å™¨äº‹ä»¶ï¼Œæ¯10ç§’å‘æ‰€æœ‰å®¢æˆ·ç«¯å‘ä¸€å¥hello, world
-  static void TimeOutCb(int id, int short events, void *data);
+char uri_root[512];
+
+struct table_entry {
+	string extension;
+	string content_type;
+} content_type_table[] = {
+	{ "txt", "text/plain" },
+	{ "c", "text/plain" },
+	{ "h", "text/plain" },
+	{ "html", "text/html" },
+	{ "htm", "text/htm" },
+	{ "css", "text/css" },
+	{ "gif", "image/gif" },
+	{ "jpg", "image/jpeg" },
+	{ "jpeg", "image/jpeg" },
+	{ "png", "image/png" },
+	{ "pdf", "application/pdf" },
+	{ "ps", "application/postscript" },
+	{ "", "" },
 };
 
-void TestServer::ReadEvent(Conn *conn)
-{
-  conn->MoveBufferData();
+static const string guess_content_type(string path) {
+	int pos = path.find_last_of('.');
+	if(pos != path.npos) {
+		string extension = path.substr(pos + 1, path.length() - pos);
+		for(table_entry * tent = &content_type_table[0]; tent->extension.length() > 0; tent++) {
+			if(strcasecmp(tent->extension.c_str(), extension.c_str()) == 0) {
+				return tent->content_type;
+			}
+		}
+	}
+not_found:
+		return "application/misc";
 }
 
-void TestServer::WriteEvent(Conn *conn)
-{
 
+void setNonblocking(int sockfd) {
+	int opts = fcntl(sockfd, F_GETFL);
+	if(opts < 0) {
+		perror("fcntl(sockfd, F_GETFL)");
+		exit(1);
+	}
+
+	opts = opts | O_NONBLOCK;
+	if(fcntl(sockfd, F_SETFL, opts) < 0) {
+		perror("fcntl(sockfd, F_SETFL, opts)");
+		exit(1);
+	}
 }
 
-void TestServer::ConnectionEvent(Conn *conn)
-{
-  TestServer *me = (TestServer*)conn->GetThread()->tcpConnect;
-  printf("new connection: %d\n", conn->GetFd());
-  me->vec.push_back(conn);
+
+const int MAXLINE = 100;
+const int OPENMAX = 100;
+const int LISTENQ = 20;
+const int SERVER_PORT = 9877;
+const int INFTIM = 1000;
+
+int main(int argc, char **argv) {
+	int i, maxi, listenfd, connfd, sockfd, epfd, nfds, portnumber;
+	ssize_t n;
+	char line[MAXLINE];
+	socklen_t clilen;
+	string szTemp("");
+
+	//ÉùÃ÷epoll_event½á¹¹ÌåµÄ±äÁ¿, evÓÃÓÚ×¢²áÊÂ¼ş,Êı×éÓÃÓÚ»Ø´«Òª´¦ÀíµÄÊÂ¼ş
+	struct epoll_event ev, events[20];
+
+	//´´½¨Ò»¸öepoll¾ä±ú, sizeÓÃÀ´¸ßËÙÄÚºËÕâ¸ö¼àÌıÊıÄ¿Ò»¹²ÓĞ¶à´ó
+	epfd = epoll_create(256); 	//Éú³ÉÓÃÓÚ´¦ÀíacceptµÄepoll×¨ÓÃÎÄ¼şÃèÊö·û
+
+	struct sockaddr_in clientaddr;
+	struct sockaddr_in servaddr;
+	
+	listenfd = socket(AF_INET, SOCK_STREAM, 0);
+	//°ÑsocketÉèÎª·Ç×èÈû
+	setNonblocking(listenfd);
+
+	//ÉèÖÃÒª´¦ÀíµÄÊÂ¼şÏà¹ØµÄÎÄ¼şÃèÊö·û
+	ev.data.fd = listenfd;
+
+	//ÉèÖÃÒª´¦ÀíµÄÊÂ¼şÀàĞÍ
+	ev.events = EPOLLIN|EPOLLET;
+
+	//×¢²áepollÊÂ¼ş
+	epoll_ctl(epfd, EPOLL_CTL_ADD, listenfd, &ev);
+
+	memset(&servaddr, 0, sizeof(servaddr));
+	servaddr.sin_family = AF_INET;
+	const char *listenaddr = "127.0.0.1";
+	servaddr.sin_addr.s_addr = inet_addr(listenaddr);
+	servaddr.sin_port = htons(SERVER_PORT);
+
+	if(bind(listenfd, (sockaddr *)&servaddr, sizeof(servaddr)) < 0) {
+		perror("bind error");
+		exit(1);
+	}
+
+	if(listen(listenfd, LISTENQ) < 0) {
+		perror("listen error");
+		exit(1);
+	}
+
+	maxi = 0;
+
+	while(true) {
+		//µÈ´ıepollÊÂ¼şµÄ·¢Éú
+		//·µ»ØĞèÒª´¦ÀíµÄÊÂ¼şÊıÄ¿nfds, Èô·µ»Ø0±íÊ¾³¬Ê±
+		nfds = epoll_wait(epfd, events, 20, 500);
+
+		//´¦Àí·¢ÉúµÄËùÓĞÊÂ¼ş
+		for(i = 0; i < nfds; i++) {
+			//Èç¹û¼à²âµ½Ò»¸ösocketÓÃ»§Á¬½Óµ½ÁË°ó¶¨µÄ¶Ë¿Ú£¬¼òÀúĞÂµÄÁ¬½Ó
+			if(events[i].data.fd == listenfd) {
+				connfd = accept(listenfd, (sockaddr *)&clientaddr, &clilen);
+				if(connfd < 0) {
+					perror("accept error");
+					exit(1);
+				}
+				setNonblocking(connfd);
+				char *str = inet_ntoa(clientaddr.sin_addr);
+				cout << "accept a connection from " << str << endl;
+
+				//ÉèÖÃÓÃÓÚ¶Á²Ù×÷µÄÎÄ¼şÃèÊö·û
+				ev.data.fd = connfd;
+				//×¢²á¼àÌıÊÂ¼ş
+				ev.events = EPOLLIN|EPOLLET;
+
+				//×¢²áev
+				epoll_ctl(epfd, EPOLL_CTL_ADD, connfd, &ev);  /*Ìí¼ÓÊÂ¼ş*/
+			} else if(events[i].events&EPOLLIN) {
+				cout << "EPOLLIN " << endl;
+				if((sockfd = events[i].data.fd) < 0) {
+					continue;
+				}
+				memset(line, 0, sizeof(line));
+				if((n = recv(sockfd, line, sizeof(line) - 1, 0)) < 0) {
+					//Connection Reset
+					if(errno == ECONNRESET) {
+						close(sockfd);
+						events[i].data.fd = -1;
+					} else {
+						cout << "read line error" << endl;
+					}
+				} else if (n == 0)  { //¶ÁÈ¡Êı¾İÎª¿Õ
+					close(sockfd);
+					events[i].data.fd = -1;
+				}
+
+				szTemp = "";
+				szTemp += line;
+				szTemp = szTemp.substr(0, szTemp.find('\r'));  //remove the enter key
+				memset(line, 0, sizeof(line));
+				cout << "Read in: " << szTemp << endl;
+
+				//ÉèÖÃÓÃÓÚĞ´²Ù×÷µÄÎÄ¼şÃèÊö·û
+				ev.data.fd = sockfd;
+				//ÉèÖÃĞ´ÊÂ¼ş
+				ev.events = EPOLLOUT|EPOLLET;
+				//ĞŞ¸ÄsockfdÉÏµÄÒª´¦ÀíµÄÊÂ¼şÎªEPOLLOUT
+				epoll_ctl(epfd, EPOLL_CTL_MOD, sockfd, &ev);
+			} else if(events[i].events & EPOLLOUT) {
+				sockfd = events[i].data.fd;
+				szTemp = "Server message";
+				send(sockfd, szTemp.c_str(), szTemp.size(), 0);
+
+				//ÉèÖÃ¶Á²Ù×÷µÄÃèÊö·û
+				ev.data.fd = sockfd;
+				//ÉèÖÃ¶Á²Ù×÷ÊÂ¼ş
+				ev.events = EPOLLIN|EPOLLET;
+				//ÉèÖÃ¶ÁÊÂ¼ş
+				epoll_ctl(epfd, EPOLL_CTL_MOD, sockfd, &ev);
+			}
+		}
+	}
+	close(epfd);
+	return 0;
 }
 
-void TestServer::CloseEvent(Conn *conn, short events)
-{
-  printf("connection closed: %d\n", conn->GetFd());
-}
-
-void TestServer::QuitCb(int sig, short events, void *data)
-{ 
-  printf("Catch the SIGINT signal, quit in one second\n");
-  TestServer *me = (TestServer*)data;
-  timeval tv = {1, 0};
-  me->StopRun(&tv);
-}
-
-void TestServer::TimeOutCb(int id, short events, void *data)
-{
-  TestServer *me = (TestServer*)data;
-  char temp[33] = "hello, world\n";
-  for(int i=0; i<me->vec.size(); i++)
-    me->vec[i]->AddToWriteBuffer(temp, strlen(temp));
-}
-
-int main()
-{
-  printf("pid: %d\n", getpid());
-  TestServer server(3);
-  server.AddSignalEvent(SIGINT, TestServer::QuitCb);
-  timeval tv = {10, 0};
-  server.AddTimerEvent(TestServer::TimeOutCb, tv, false);
-  server.SetPort(9877);
-  server.StartRun();
-  printf("done\n");
-  
-  return 0;
-}
