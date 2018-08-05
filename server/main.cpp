@@ -144,12 +144,10 @@ int main(int argc, char **argv) {
 				//设置用于读操作的文件描述符
 				client_conn->epev.data.fd = client_conn->get_fd();
 				//注册监听事件
-                client_conn->add_event(EPOLLIN);
-                client_conn->add_event(EPOLLET);
-
-				//注册ev
-				epoll_ctl(epfd, EPOLL_CTL_ADD, client_conn->get_fd(), &(client_conn->epev));  /*添加事件*/
+                client_conn->set_events(EPOLLIN|EPOLLET);
                 clients[client_conn->get_fd()] = client_conn;
+				//注册ev
+				epoll_ctl(epfd, EPOLL_CTL_ADD, client_conn->get_fd(), &(clients[client_conn->get_fd()]->epev));  /*添加事件*/
 			} else if(events[i].events&EPOLLIN) {
 				cout << "EPOLLIN " << endl;
 				if((sockfd = events[i].data.fd) < 0) {
@@ -183,9 +181,7 @@ int main(int argc, char **argv) {
 				//ev.data.fd = sockfd;
 				//设置写事件
 				//ev.events = EPOLLOUT|EPOLLET;
-				clients[events[i].data.fd]->remove_event(EPOLLIN);
-				clients[events[i].data.fd]->add_event(EPOLLET);
-				clients[events[i].data.fd]->add_event(EPOLLOUT);
+				clients[events[i].data.fd]->set_events(EPOLLOUT|EPOLLET);
 				//修改sockfd上的要处理的事件为EPOLLOUT
 				epoll_ctl(epfd, EPOLL_CTL_MOD, sockfd, &(clients[events[i].data.fd]->epev));
 			} else if(events[i].events & EPOLLOUT) {
@@ -199,9 +195,7 @@ int main(int argc, char **argv) {
 				ev.data.fd = sockfd;
 				//设置读操作事件
 				//ev.events = EPOLLIN|EPOLLET;
-				clients[events[i].data.fd]->remove_event(EPOLLOUT);
-				clients[events[i].data.fd]->add_event(EPOLLET);
-				clients[events[i].data.fd]->add_event(EPOLLIN);
+				clients[events[i].data.fd]->set_events(EPOLLIN|EPOLLET);
 				//设置读事件
 				epoll_ctl(epfd, EPOLL_CTL_MOD, sockfd, &(clients[events[i].data.fd]->epev));
 			}
