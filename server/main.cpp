@@ -10,7 +10,7 @@ extern "C" {
 #include <errno.h>
 #include <string.h>
 }
-
+#include "connection.hpp"
 #include <iostream>
 using namespace std;
 
@@ -45,10 +45,8 @@ static const string guess_content_type(string path) {
 			}
 		}
 	}
-not_found:
-		return "application/misc";
+    return "application/misc";
 }
-
 
 void setNonblocking(int sockfd) {
 	int opts = fcntl(sockfd, F_GETFL);
@@ -63,7 +61,6 @@ void setNonblocking(int sockfd) {
 		exit(1);
 	}
 }
-
 
 const int MAXLINE = 100;
 const int OPENMAX = 100;
