@@ -30,11 +30,16 @@ public:
     
     void dump_read_buf_info();
     void dump_write_buf_info();
+    
+    virtual void set_event(int ev);
+    virtual void remove_event(int ev);
+    
 private:
     int         fd;
     sockaddr    client_addr;
     char        *rbuf;
     char        *wbuf;
+    int         events;
 };
 
 #endif // CONNECTION_H

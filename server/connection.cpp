@@ -9,8 +9,8 @@
 using namespace std;
 connection::connection(int sockfd) {
     fd = sockfd;
-    rbuf = new char[CONNECTION_MAX_BUFSIZE];
-    wbuf = new char[CONNECTION_MAX_BUFSIZE];
+    rbuf = new char[CONNECTION_MAX_BUFSIZE]();
+    wbuf = new char[CONNECTION_MAX_BUFSIZE]();
 }
 
 connection::~connection() {
@@ -77,4 +77,30 @@ void connection::dump_write_buf_info() {
     cout << "the read buffer info <<<" << endl;
     cout << wbuf << endl;
     cout << ">>>" << endl;
+}
+
+void connection::set_event(int ev) {
+    if(fd > 0) {
+        int opts = fcntl(fd, F_GETFL);
+        if(opts < 0) {
+            perror("fcntl F_GETFL");
+        }
+        opts = opts | ev;
+        if(fcntl(fd, F_SETFL, opts) < 0) {
+            perror("fcntl F_SETFL");
+        }
+    }
+}
+
+void connection::remove_event(int ev) {
+    if(fd > 0) {
+        int opts = fcntl(fd, F_GETFL);
+        if(opts < 0) {
+            perror("fcntl F_GETFL");
+        }
+        opts = opts & (~ev);
+        if(fcntl(fd, F_SETFL, opts) < 0) {
+            perror("fcntl F_SETFL");
+        }
+    }
 }
