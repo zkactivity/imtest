@@ -12,6 +12,7 @@ extern "C" {
 }
 #include "connection.hpp"
 #include <iostream>
+#include <map>
 using namespace std;
 
 char uri_root[512];
@@ -65,11 +66,16 @@ void setNonblocking(int sockfd) {
 const int MAXLINE = 100;
 const int OPENMAX = 100;
 const int LISTENQ = 20;
+const char listen_addr[] = "0.0.0.0";
 const int SERVER_PORT = 9877;
 const int INFTIM = 1000;
 
+static int listenfd;
+static int epfd;
+
+static map<int, connection *> clients;
 int main(int argc, char **argv) {
-	int i, maxi, listenfd, connfd, sockfd, epfd, nfds, portnumber;
+	int i, maxi, connfd, sockfd, nfds, portnumber;
 	ssize_t n;
 	char line[MAXLINE];
 	socklen_t clilen;
@@ -99,8 +105,7 @@ int main(int argc, char **argv) {
 
 	memset(&servaddr, 0, sizeof(servaddr));
 	servaddr.sin_family = AF_INET;
-	const char *listenaddr = "127.0.0.1";
-	servaddr.sin_addr.s_addr = inet_addr(listenaddr);
+	servaddr.sin_addr.s_addr = inet_addr(listen_addr);
 	servaddr.sin_port = htons(SERVER_PORT);
 
 	if(bind(listenfd, (sockaddr *)&servaddr, sizeof(servaddr)) < 0) {
@@ -124,64 +129,81 @@ int main(int argc, char **argv) {
 		for(i = 0; i < nfds; i++) {
 			//如果监测到一个socket用户连接到了绑定的端口，简历新的连接
 			if(events[i].data.fd == listenfd) {
-				connfd = accept(listenfd, (sockaddr *)&clientaddr, &clilen);
+				connfd = accept(listenfd, (sockaddr *)(&clientaddr), &clilen);
 				if(connfd < 0) {
 					perror("accept error");
 					exit(1);
 				}
-				setNonblocking(connfd);
+                connection * client_conn = new connection(connfd);
+                client_conn->set_client_addr(clientaddr);
+                client_conn->set_nonblocking();
+				//setNonblocking(connfd);
 				char *str = inet_ntoa(clientaddr.sin_addr);
 				cout << "accept a connection from " << str << endl;
 
 				//设置用于读操作的文件描述符
-				ev.data.fd = connfd;
+				client_conn->epev.data.fd = client_conn->get_fd();
 				//注册监听事件
-				ev.events = EPOLLIN|EPOLLET;
+                client_conn->add_event(EPOLLIN);
+                client_conn->add_event(EPOLLET);
 
 				//注册ev
-				epoll_ctl(epfd, EPOLL_CTL_ADD, connfd, &ev);  /*添加事件*/
+				epoll_ctl(epfd, EPOLL_CTL_ADD, client_conn->get_fd(), &(client_conn->epev));  /*添加事件*/
+                clients[client_conn->get_fd()] = client_conn;
 			} else if(events[i].events&EPOLLIN) {
 				cout << "EPOLLIN " << endl;
 				if((sockfd = events[i].data.fd) < 0) {
 					continue;
 				}
+				clients[events[i].data.fd]->set_epoll_event(events[i]);
+				
 				memset(line, 0, sizeof(line));
-				if((n = recv(sockfd, line, sizeof(line) - 1, 0)) < 0) {
+				if((n = clients[events[i].data.fd]->read()) < 0) {
 					//Connection Reset
 					if(errno == ECONNRESET) {
-						close(sockfd);
+						//close(sockfd);
+						clients.erase(clients.find(events[i].data.fd));
 						events[i].data.fd = -1;
 					} else {
 						cout << "read line error" << endl;
 					}
 				} else if (n == 0)  { //读取数据为空
-					close(sockfd);
+					//close(sockfd);
+					clients.erase(clients.find(events[i].data.fd));
 					events[i].data.fd = -1;
 				}
-
-				szTemp = "";
-				szTemp += line;
-				szTemp = szTemp.substr(0, szTemp.find('\r'));  //remove the enter key
-				memset(line, 0, sizeof(line));
-				cout << "Read in: " << szTemp << endl;
+				clients[events[i].data.fd]->dump_read_buf_info();
+				//szTemp = "";
+				//szTemp += line;
+				//szTemp = szTemp.substr(0, szTemp.find('\r'));  //remove the enter key
+				//memset(line, 0, sizeof(line));
+				//cout << "Read in: " << szTemp << endl;
 
 				//设置用于写操作的文件描述符
-				ev.data.fd = sockfd;
+				//ev.data.fd = sockfd;
 				//设置写事件
-				ev.events = EPOLLOUT|EPOLLET;
+				//ev.events = EPOLLOUT|EPOLLET;
+				clients[events[i].data.fd]->remove_event(EPOLLIN);
+				clients[events[i].data.fd]->add_event(EPOLLET);
+				clients[events[i].data.fd]->add_event(EPOLLOUT);
 				//修改sockfd上的要处理的事件为EPOLLOUT
-				epoll_ctl(epfd, EPOLL_CTL_MOD, sockfd, &ev);
+				epoll_ctl(epfd, EPOLL_CTL_MOD, sockfd, &(clients[events[i].data.fd]->epev));
 			} else if(events[i].events & EPOLLOUT) {
 				sockfd = events[i].data.fd;
-				szTemp = "Server message";
-				send(sockfd, szTemp.c_str(), szTemp.size(), 0);
+				szTemp = "Server message!\n";
+				clients[events[i].data.fd]->copy_to_buf(szTemp.c_str(), szTemp.length());
+				clients[events[i].data.fd]->write(szTemp.length() + 1);
+				//send(sockfd, szTemp.c_str(), szTemp.size(), 0);
 
 				//设置读操作的描述符
 				ev.data.fd = sockfd;
 				//设置读操作事件
-				ev.events = EPOLLIN|EPOLLET;
+				//ev.events = EPOLLIN|EPOLLET;
+				clients[events[i].data.fd]->remove_event(EPOLLOUT);
+				clients[events[i].data.fd]->add_event(EPOLLET);
+				clients[events[i].data.fd]->add_event(EPOLLIN);
 				//设置读事件
-				epoll_ctl(epfd, EPOLL_CTL_MOD, sockfd, &ev);
+				epoll_ctl(epfd, EPOLL_CTL_MOD, sockfd, &(clients[events[i].data.fd]->epev));
 			}
 		}
 	}
