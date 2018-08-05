@@ -88,6 +88,10 @@ void connection::remove_event(uint32_t ev) {
     epev.events = epev.events & (~ev);
 }
 
+void connection::set_events(uint32_t events) {
+	epev.events = events;
+}
+
 void connection::set_client_addr(sockaddr_in & addr) {
     memcpy(&client_addr, &addr, sizeof(client_addr));
 }

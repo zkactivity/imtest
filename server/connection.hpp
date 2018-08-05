@@ -36,6 +36,7 @@ public:
     
     virtual void add_event(uint32_t ev);
     virtual void remove_event(uint32_t ev);
+	virtual void set_events(uint32_t events);
     virtual void set_client_addr(sockaddr_in & addr);
     uint32_t get_events() const;
     int get_fd() const;
