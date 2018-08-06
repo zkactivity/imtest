@@ -1,6 +1,6 @@
 SOURCE_FILES=tls_server.cpp socket_kernel.cpp tls.cpp
 
-main:main.cpp connection.cpp
+main:main_server.cpp
 	g++ $^ -o main -lssl -lcrypto -lpthread
 
 https-server:https-server.cpp

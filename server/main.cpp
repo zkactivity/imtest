@@ -1,210 +1,281 @@
-
-extern "C" {
 #include <sys/socket.h>
-#include <sys/epoll.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
+#include <sys/socket.h>
+#include <sys/types.h>
+#include <netinet/in.h>
 #include <fcntl.h>
-#include <unistd.h>
+#include <netdb.h>
 #include <stdio.h>
-#include <errno.h>
 #include <string.h>
-}
-#include "connection.hpp"
-#include <iostream>
-#include <map>
+#include <stdlib.h>
+#include <unistd.h>
+#include <errno.h>
+#include <string>
+#include <poll.h>
+#include <sys/epoll.h>
+#include <signal.h>
+#include <openssl/bio.h>
+#include <openssl/ssl.h>  
+#include <openssl/err.h>
+
 using namespace std;
 
-char uri_root[512];
+#define log(...) do { printf(__VA_ARGS__); fflush(stdout); } while(0)
+#define check0(x, ...) if(x) do { log( __VA_ARGS__); exit(1); } while(0)
+#define check1(x, ...) if(!x) do { log( __VA_ARGS__); exit(1); } while(0)
 
-struct table_entry {
-	string extension;
-	string content_type;
-} content_type_table[] = {
-	{ "txt", "text/plain" },
-	{ "c", "text/plain" },
-	{ "h", "text/plain" },
-	{ "html", "text/html" },
-	{ "htm", "text/htm" },
-	{ "css", "text/css" },
-	{ "gif", "image/gif" },
-	{ "jpg", "image/jpeg" },
-	{ "jpeg", "image/jpeg" },
-	{ "png", "image/png" },
-	{ "pdf", "application/pdf" },
-	{ "ps", "application/postscript" },
-	{ "", "" },
+BIO* errBio;
+SSL_CTX* g_sslCtx;
+
+int epollfd, listenfd;
+
+struct Channel {
+    int fd_;
+    SSL *ssl_;
+    bool tcpConnected_;
+    bool sslConnected_;
+    int events_;
+    Channel(int fd, int events) {
+        memset(this, 0, sizeof *this);
+        fd_ = fd;
+        events_ = events;
+    }
+    void update() {
+        struct epoll_event ev;
+        memset(&ev, 0, sizeof(ev));
+        ev.events = events_;
+        ev.data.ptr = this;
+        log("modifying fd %d events read %d write %d\n",
+            fd_, ev.events & EPOLLIN, ev.events & EPOLLOUT);
+        int r = epoll_ctl(epollfd, EPOLL_CTL_MOD, fd_, &ev);
+        check0(r, "epoll_ctl mod failed %d %s", errno, strerror(errno));
+    }
+    ~Channel() {
+        log("deleting fd %d\n", fd_);
+        close(fd_);
+        if (ssl_) {
+            SSL_shutdown (ssl_);
+            SSL_free(ssl_);
+        }
+    }
 };
 
-static const string guess_content_type(string path) {
-	int pos = path.find_last_of('.');
-	if(pos != path.npos) {
-		string extension = path.substr(pos + 1, path.length() - pos);
-		for(table_entry * tent = &content_type_table[0]; tent->extension.length() > 0; tent++) {
-			if(strcasecmp(tent->extension.c_str(), extension.c_str()) == 0) {
-				return tent->content_type;
-			}
-		}
-	}
-    return "application/misc";
+int setNonBlock(int fd, bool value) {
+    int flags = fcntl(fd, F_GETFL, 0);
+    if (flags < 0) {
+        return errno;
+    }
+    if (value) {
+        return fcntl(fd, F_SETFL, flags | O_NONBLOCK);
+    }
+    return fcntl(fd, F_SETFL, flags & ~O_NONBLOCK);
 }
 
-void setNonblocking(int sockfd) {
-	int opts = fcntl(sockfd, F_GETFL);
-	if(opts < 0) {
-		perror("fcntl(sockfd, F_GETFL)");
-		exit(1);
-	}
 
-	opts = opts | O_NONBLOCK;
-	if(fcntl(sockfd, F_SETFL, opts) < 0) {
-		perror("fcntl(sockfd, F_SETFL, opts)");
-		exit(1);
-	}
+void addEpollFd(int epollfd, Channel* ch) {
+    struct epoll_event ev;
+    memset(&ev, 0, sizeof(ev));
+    ev.events = ch->events_;
+    ev.data.ptr = ch;
+    log("adding fd %d events %d\n", ch->fd_, ev.events);
+    int r = epoll_ctl(epollfd, EPOLL_CTL_ADD, ch->fd_, &ev);
+    check0(r, "epoll_ctl add failed %d %s", errno, strerror(errno));
 }
 
-const int MAXLINE = 100;
-const int OPENMAX = 100;
-const int LISTENQ = 20;
-const char listen_addr[] = "0.0.0.0";
-const int SERVER_PORT = 9877;
-const int INFTIM = 1000;
-
-static int listenfd;
-static int epfd;
-
-static map<int, connection *> clients;
-int main(int argc, char **argv) {
-	int i, maxi, connfd, sockfd, nfds, portnumber;
-	ssize_t n;
-	char line[MAXLINE];
-	socklen_t clilen;
-	string szTemp("");
-
-	//声明epoll_event结构体的变量, ev用于注册事件,数组用于回传要处理的事件
-	struct epoll_event ev, events[20];
-
-	//创建一个epoll句柄, size用来高速内核这个监听数目一共有多大
-	epfd = epoll_create(256); 	//生成用于处理accept的epoll专用文件描述符
-
-	struct sockaddr_in clientaddr;
-	struct sockaddr_in servaddr;
-	
-	listenfd = socket(AF_INET, SOCK_STREAM, 0);
-	//把socket设为非阻塞
-	setNonblocking(listenfd);
-
-	//设置要处理的事件相关的文件描述符
-	ev.data.fd = listenfd;
-
-	//设置要处理的事件类型
-	ev.events = EPOLLIN|EPOLLET;
-
-	//注册epoll事件
-	epoll_ctl(epfd, EPOLL_CTL_ADD, listenfd, &ev);
-
-	memset(&servaddr, 0, sizeof(servaddr));
-	servaddr.sin_family = AF_INET;
-	servaddr.sin_addr.s_addr = inet_addr(listen_addr);
-	servaddr.sin_port = htons(SERVER_PORT);
-
-	if(bind(listenfd, (sockaddr *)&servaddr, sizeof(servaddr)) < 0) {
-		perror("bind error");
-		exit(1);
-	}
-
-	if(listen(listenfd, LISTENQ) < 0) {
-		perror("listen error");
-		exit(1);
-	}
-
-	maxi = 0;
-
-	while(true) {
-		//等待epoll事件的发生
-		//返回需要处理的事件数目nfds, 若返回0表示超时
-		nfds = epoll_wait(epfd, events, 20, 500);
-
-		//处理发生的所有事件
-		for(i = 0; i < nfds; i++) {
-			//如果监测到一个socket用户连接到了绑定的端口，建立新的连接
-			if(events[i].data.fd == listenfd) {
-				connfd = accept(listenfd, (sockaddr *)(&clientaddr), &clilen);
-				if(connfd < 0) {
-					perror("accept error");
-					exit(1);
-				}
-                connection * client_conn = new connection(connfd);
-                client_conn->set_client_addr(clientaddr);
-                client_conn->set_nonblocking();
-				//setNonblocking(connfd);
-				char *str = inet_ntoa(clientaddr.sin_addr);
-				cout << "accept a connection from " << str << endl;
-
-				//设置用于读操作的文件描述符
-				client_conn->epev.data.fd = client_conn->get_fd();
-				//注册监听事件
-                client_conn->set_events(EPOLLIN|EPOLLET);
-                clients[client_conn->get_fd()] = client_conn;
-				//注册ev
-				epoll_ctl(epfd, EPOLL_CTL_ADD, client_conn->get_fd(), &(clients[client_conn->get_fd()]->epev));  /*添加事件*/
-			} else if(events[i].events&EPOLLIN) {
-				cout << "EPOLLIN " << endl;
-				if((sockfd = events[i].data.fd) < 0) {
-					continue;
-				}
-				clients[events[i].data.fd]->set_epoll_event(events[i]);
-				
-				memset(line, 0, sizeof(line));
-				if((n = clients[events[i].data.fd]->read()) < 0) {
-					//Connection Reset
-					if(errno == ECONNRESET) {
-						//close(sockfd);
-						clients.erase(clients.find(events[i].data.fd));
-						events[i].data.fd = -1;
-					} else {
-						cout << "read line error" << endl;
-					}
-				} else if (n == 0)  { //读取数据为空
-					//close(sockfd);
-					clients.erase(clients.find(events[i].data.fd));
-					events[i].data.fd = -1;
-				}
-				clients[events[i].data.fd]->dump_read_buf_info();
-				//szTemp = "";
-				//szTemp += line;
-				//szTemp = szTemp.substr(0, szTemp.find('\r'));  //remove the enter key
-				//memset(line, 0, sizeof(line));
-				//cout << "Read in: " << szTemp << endl;
-
-				//设置用于写操作的文件描述符
-				//ev.data.fd = sockfd;
-				//设置写事件
-				//ev.events = EPOLLOUT|EPOLLET;
-				clients[events[i].data.fd]->set_events(EPOLLOUT|EPOLLET);
-				//修改sockfd上的要处理的事件为EPOLLOUT
-				epoll_ctl(epfd, EPOLL_CTL_MOD, sockfd, &(clients[events[i].data.fd]->epev));
-			} else if(events[i].events & EPOLLOUT) {
-				sockfd = events[i].data.fd;
-				szTemp = "HTTP/1.1 200 OK\r\nServer: Nginx\r\nContent-Length:19\r\n\r\n<p>Server Msg!</p>";
-				clients[events[i].data.fd]->copy_to_buf(szTemp.c_str(), szTemp.length());
-				clients[events[i].data.fd]->write(szTemp.length() + 1);
-				//send(sockfd, szTemp.c_str(), szTemp.size(), 0);
-
-				//设置读操作的描述符
-				ev.data.fd = sockfd;
-				//设置读操作事件
-				//ev.events = EPOLLIN|EPOLLET;
-				clients[events[i].data.fd]->set_events(EPOLLIN|EPOLLET);
-                map<int, connection *>::iterator it = clients.find(events[i].data.fd);
-                delete it->second;
-                clients.erase(clients.find(events[i].data.fd));
-				//设置读事件
-				epoll_ctl(epfd, EPOLL_CTL_DEL, sockfd, NULL);
-			}
-		}
-	}
-	close(epfd);
-	return 0;
+int createServer(short port) {
+    int fd = socket(AF_INET, SOCK_STREAM|SOCK_CLOEXEC, 0);
+    setNonBlock(fd, 1);
+    struct sockaddr_in addr;  
+    memset(&addr, 0, sizeof addr);
+    addr.sin_family = AF_INET;
+    addr.sin_port = htons(port);
+    addr.sin_addr.s_addr = INADDR_ANY;
+    int r = ::bind(fd,(struct sockaddr *)&addr, sizeof(struct sockaddr));
+    check0(r, "bind to 0.0.0.0:%d failed %d %s", port, errno, strerror(errno));
+    r = listen(fd, 20);
+    check0(r, "listen failed %d %s", errno, strerror(errno));
+    log("fd %d listening at %d\n", fd, port);
+    return fd;
 }
 
+void handleAccept() {
+    struct sockaddr_in raddr;
+    socklen_t rsz = sizeof(raddr);
+    int cfd;
+    while ((cfd = accept4(listenfd,(struct sockaddr *)&raddr,&rsz, SOCK_CLOEXEC))>=0) {
+        sockaddr_in peer, local;
+        socklen_t alen = sizeof(peer);
+        int r = getpeername(cfd, (sockaddr*)&peer, &alen);
+        if (r < 0) {
+            log("get peer name failed %d %s\n", errno, strerror(errno));
+            continue;
+        }
+        r = getsockname(cfd, (sockaddr*)&local, &alen);
+        if (r < 0) {
+            log("getsockname failed %d %s\n", errno, strerror(errno));
+            continue;
+        }
+        setNonBlock(cfd, 1);
+        Channel* ch = new Channel(cfd, EPOLLIN | EPOLLOUT);
+        addEpollFd(epollfd, ch);
+    }
+}
+
+void handleHandshake(Channel* ch) {
+    if (!ch->tcpConnected_) {
+        struct pollfd pfd;
+        pfd.fd = ch->fd_;
+        pfd.events = POLLOUT | POLLERR;
+        int r = poll(&pfd, 1, 0);
+        if (r == 1 && pfd.revents == POLLOUT) {
+            log("tcp connected fd %d\n", ch->fd_);
+            ch->tcpConnected_ = true;
+            ch->events_ = EPOLLIN | EPOLLOUT | EPOLLERR;
+            ch->update();
+        } else {
+            log("poll fd %d return %d revents %d\n", ch->fd_, r, pfd.revents);
+            delete ch;
+            return;
+        }
+    }
+    if (ch->ssl_ == NULL) {
+        ch->ssl_ = SSL_new (g_sslCtx);
+        check0(ch->ssl_ == NULL, "SSL_new failed");
+        int r = SSL_set_fd(ch->ssl_, ch->fd_);
+        check0(!r, "SSL_set_fd failed");
+        log("SSL_set_accept_state for fd %d\n", ch->fd_);
+        SSL_set_accept_state(ch->ssl_);
+    }
+    int r = SSL_do_handshake(ch->ssl_);
+    if (r == 1) {
+        ch->sslConnected_ = true;
+        log("ssl connected fd %d\n", ch->fd_);
+        return;
+    }
+    int err = SSL_get_error(ch->ssl_, r);
+    int oldev = ch->events_;
+    if (err == SSL_ERROR_WANT_WRITE) {
+        ch->events_ |= EPOLLOUT;
+        ch->events_ &= ~EPOLLIN;
+        log("return want write set events %d\n", ch->events_);
+        if (oldev == ch->events_) return;
+        ch->update();
+    } else if (err == SSL_ERROR_WANT_READ) {
+        ch->events_ |= EPOLLIN;
+        ch->events_ &= ~EPOLLOUT;
+        log("return want read set events %d\n", ch->events_);
+        if (oldev == ch->events_) return;
+        ch->update();
+    } else {
+        log("SSL_do_handshake return %d error %d errno %d msg %s\n", r, err, errno, strerror(errno));
+        ERR_print_errors(errBio);
+        delete ch;
+    }
+}
+
+void handleDataRead(Channel* ch) {
+    char buf[4096];
+    int rd = SSL_read(ch->ssl_, buf, sizeof buf);
+    int ssle = SSL_get_error(ch->ssl_, rd);
+    if (rd > 0) {
+        const char* cont = "HTTP/1.1 200 OK\r\nConnection: Close\r\n\r\n";
+        int len1 = strlen(cont);
+        int wd = SSL_write(ch->ssl_, cont, len1);
+        log("SSL_write %d bytes\n", wd);
+        delete ch;
+    }
+    if (rd < 0 && ssle != SSL_ERROR_WANT_READ) {
+        log("SSL_read return %d error %d errno %d msg %s", rd, ssle, errno, strerror(errno));
+        delete ch;
+        return;
+    }
+    if (rd == 0) {
+        if (ssle == SSL_ERROR_ZERO_RETURN)
+            log("SSL has been shutdown.\n");
+        else
+            log("Connection has been aborted.\n");
+        delete ch;
+    }
+}
+
+void handleRead(Channel* ch) {
+    if (ch->fd_ == listenfd) {
+        return handleAccept();
+    }
+    if (ch->sslConnected_) {
+        return handleDataRead(ch);
+    }
+    handleHandshake(ch);
+}
+
+void handleWrite(Channel* ch) {
+    if (!ch->sslConnected_) {
+        return handleHandshake(ch);
+    }
+    log("handle write fd %d\n", ch->fd_);
+    ch->events_ &= ~EPOLLOUT;
+    ch->update();
+}
+
+void initSSL() {
+    SSL_load_error_strings ();
+    int r = SSL_library_init ();
+    check0(!r, "SSL_library_init failed");
+    g_sslCtx = SSL_CTX_new (SSLv23_method ());
+    check0(g_sslCtx == NULL, "SSL_CTX_new failed");
+    errBio = BIO_new_fd(2, BIO_NOCLOSE);
+    string cert = "server.pem", key = "server.pem";
+    r = SSL_CTX_use_certificate_file(g_sslCtx, cert.c_str(), SSL_FILETYPE_PEM);
+    check0(r<=0, "SSL_CTX_use_certificate_file %s failed", cert.c_str());
+    r = SSL_CTX_use_PrivateKey_file(g_sslCtx, key.c_str(), SSL_FILETYPE_PEM);
+    check0(r<=0, "SSL_CTX_use_PrivateKey_file %s failed", key.c_str());
+    r = SSL_CTX_check_private_key(g_sslCtx);
+    check0(!r, "SSL_CTX_check_private_key failed");
+    log("SSL inited\n");
+}
+
+int g_stop = 0;
+
+void loop_once(int epollfd, int waitms) {
+    const int kMaxEvents = 20;
+    struct epoll_event activeEvs[kMaxEvents];
+    int n = epoll_wait(epollfd, activeEvs, kMaxEvents, waitms);
+    for (int i = n-1; i >= 0; i --) {
+        Channel* ch = (Channel*)activeEvs[i].data.ptr;
+        int events = activeEvs[i].events;
+        if (events & (EPOLLIN | EPOLLERR)) {
+            log("fd %d handle read\n", ch->fd_);
+            handleRead(ch);
+        } else if (events & EPOLLOUT) {
+            log("fd %d handle write\n", ch->fd_);
+            handleWrite(ch);
+        } else {
+            log("unknown event %d\n", events);
+        }
+    }
+}
+
+void handleInterrupt(int sig) {
+    g_stop = true;
+}
+
+int main(int argc, char **argv)  
+{
+    signal(SIGINT, handleInterrupt);
+    initSSL();
+    epollfd = epoll_create1(EPOLL_CLOEXEC);
+    listenfd = createServer(443);
+    Channel* li = new Channel(listenfd, EPOLLIN);
+    addEpollFd(epollfd, li);
+    while (!g_stop) {
+        loop_once(epollfd, 100);
+    }
+    delete li;
+    ::close(epollfd);
+    BIO_free(errBio);
+    SSL_CTX_free(g_sslCtx);
+    ERR_free_strings();
+    log("program exited\n");
+    return 0;
+}
