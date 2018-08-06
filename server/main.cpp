@@ -127,7 +127,7 @@ int main(int argc, char **argv) {
 
 		//处理发生的所有事件
 		for(i = 0; i < nfds; i++) {
-			//如果监测到一个socket用户连接到了绑定的端口，简历新的连接
+			//如果监测到一个socket用户连接到了绑定的端口，建立新的连接
 			if(events[i].data.fd == listenfd) {
 				connfd = accept(listenfd, (sockaddr *)(&clientaddr), &clilen);
 				if(connfd < 0) {
@@ -186,7 +186,7 @@ int main(int argc, char **argv) {
 				epoll_ctl(epfd, EPOLL_CTL_MOD, sockfd, &(clients[events[i].data.fd]->epev));
 			} else if(events[i].events & EPOLLOUT) {
 				sockfd = events[i].data.fd;
-				szTemp = "Server message!\n";
+				szTemp = "HTTP/1.1 200 OK\r\nServer: Nginx\r\nContent-Length:19\r\n\r\n<p>Server Msg!</p>";
 				clients[events[i].data.fd]->copy_to_buf(szTemp.c_str(), szTemp.length());
 				clients[events[i].data.fd]->write(szTemp.length() + 1);
 				//send(sockfd, szTemp.c_str(), szTemp.size(), 0);
@@ -196,8 +196,11 @@ int main(int argc, char **argv) {
 				//设置读操作事件
 				//ev.events = EPOLLIN|EPOLLET;
 				clients[events[i].data.fd]->set_events(EPOLLIN|EPOLLET);
+                map<int, connection *>::iterator it = clients.find(events[i].data.fd);
+                delete it->second;
+                clients.erase(clients.find(events[i].data.fd));
 				//设置读事件
-				epoll_ctl(epfd, EPOLL_CTL_MOD, sockfd, &(clients[events[i].data.fd]->epev));
+				epoll_ctl(epfd, EPOLL_CTL_DEL, sockfd, NULL);
 			}
 		}
 	}

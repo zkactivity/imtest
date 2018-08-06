@@ -29,9 +29,10 @@ connection::~connection() {
 ssize_t connection::read(size_t n) {
     n = (n > (CONNECTION_MAX_BUFSIZE - 1)) ? (CONNECTION_MAX_BUFSIZE - 1) : n;
     ssize_t recv_len = recv(fd, rbuf, n, 0);
-    wbuf[CONNECTION_MAX_BUFSIZE - 1] = '\0';
+    rbuf[CONNECTION_MAX_BUFSIZE - 1] = '\0';
     if(recv_len <= 0) {
         perror("connection::read");
+        rbuf[0] = 0;
     }
     return recv_len;
 }
