@@ -204,6 +204,7 @@ void handleDataRead(Channel * ch) {
 	int rd = SSL_read(ch->m_pSsl, buf, sizeof buf - 1);
 	int ssle = SSL_get_error(ch->m_pSsl, rd);
 	if(rd > 0) {
+		cout << "Get data from client: <<<\033[1;31m" << endl << buf << "\033[0m>>>" << endl;
         const char* cont = "HTTP/1.1 200 OK\r\nConnection: Close\r\nContent-Length: 18\r\n\r\n<p>Server Msg!</p>";
         int len1 = strlen(cont);
         int wd = SSL_write(ch->m_pSsl, cont, len1);
